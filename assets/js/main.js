@@ -23,6 +23,9 @@
     if (window.AlbumEditor && typeof window.AlbumEditor.init === "function") {
       window.AlbumEditor.init(book);
     }
+    if (window.AlbumEditor && typeof window.AlbumEditor.initMusic === "function") {
+      window.AlbumEditor.initMusic();
+    }
   }
 
   if (document.readyState === "loading") {

@@ -546,6 +546,14 @@ body {
   background: #fef2f2;
 }
 
+.editor-btn--disabled,
+.editor-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  filter: none;
+}
+
 .editor-btn--secondary {
   border: 1px solid #8b7355;
   color: #5a4a38;
@@ -562,6 +570,41 @@ body {
   display: block;
   text-align: center;
   margin: 0;
+}
+
+/* Sección música */
+.editor-music-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e0d9ce;
+}
+
+.editor-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.editor-checkbox {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: #6b4a2a;
+}
+
+.editor-label--inline {
+  margin-bottom: 0;
+}
+
+.editor-range {
+  width: 100%;
+  height: 8px;
+  accent-color: #6b4a2a;
 }
 
 @media (max-width: 560px) {

@@ -6,7 +6,13 @@
   "use strict";
 
   var STORAGE_KEY = "album-editor-data";
+  var MUSIC_STORAGE_KEY = "album-music-config";
   var MAX_PAGES = 100;
+
+  /** Índices que no se pueden eliminar (primera y última página de contenido). */
+  function canDeletePageAtIndex(idx, total) {
+    return total > 1 && idx > 0 && idx < total - 1;
+  }
 
   /**
    * Convierte las páginas del config por defecto al formato { id, title, image, content }.
@@ -93,7 +99,8 @@
   var panelOpen = false;
   var bookInstance = null;
   var selectEl, titleInput, contentInput, imagePreview, fileInput;
-  var counterEl, btnSave, btnDelete, btnAdd, btnExport, btnImport, importInput;
+  var counterEl, btnSave, btnDelete, btnAddLeft, btnAddRight, btnExport, btnImport, importInput;
+  var musicCheckbox, musicFileInput, volumeRange, volumeLabel, audioEl;
 
   function getPages() {
     return window.BOOK_CONFIG && window.BOOK_CONFIG.pages ? window.BOOK_CONFIG.pages.slice() : [];
@@ -119,6 +126,17 @@
       imagePreview.dataset.hasImage = page.image ? "1" : "0";
     }
     if (fileInput) fileInput.value = "";
+    updateDeleteButton();
+  }
+
+  /** Habilita o deshabilita "Eliminar página" según si la página actual es protegida. */
+  function updateDeleteButton() {
+    if (!btnDelete) return;
+    var pages = getPages();
+    var idx = getSelectedPageIndex();
+    var canDelete = canDeletePageAtIndex(idx, pages.length);
+    btnDelete.disabled = !canDelete;
+    btnDelete.classList.toggle("editor-btn--disabled", !canDelete);
   }
 
   function getSelectedPageIndex() {
@@ -170,6 +188,7 @@
     var pages = getPages();
     if (pages.length <= 0) return;
     var idx = getSelectedPageIndex();
+    if (!canDeletePageAtIndex(idx, pages.length)) return;
     pages.splice(idx, 1);
     if (!saveToStorage(pages)) return;
     applyPagesToConfig(pages);
@@ -179,8 +198,18 @@
     updateCounter();
   }
 
-  function onAdd() {
-    var pages = getPages();
+  /** Recalcula ids consecutivos (1, 2, 3, ...) en el array de páginas. */
+  function recalcPageIds(pages) {
+    for (var i = 0; i < pages.length; i++) pages[i].id = i + 1;
+  }
+
+  /**
+   * Inserta una nueva página en la posición indicada.
+   * @param {Array} pages - Copia del array de páginas
+   * @param {number} atIndex - Índice donde insertar
+   * @param {number} spreadIndexToShow - Índice de spread (libro) a dejar visible tras reconstruir (content idx + 1)
+   */
+  function insertPageAt(pages, atIndex, spreadIndexToShow) {
     if (pages.length >= MAX_PAGES) {
       alert("Máximo " + MAX_PAGES + " páginas.");
       return;
@@ -191,14 +220,30 @@
       image: "",
       content: ""
     };
-    pages.push(newPage);
+    pages.splice(atIndex, 0, newPage);
+    recalcPageIds(pages);
     if (!saveToStorage(pages)) return;
     applyPagesToConfig(pages);
     refreshBook();
     rebuildSelect();
-    selectEl.selectedIndex = pages.length - 1;
-    fillForm(newPage);
+    selectEl.selectedIndex = atIndex;
+    fillForm(pages[atIndex]);
     updateCounter();
+    if (bookInstance && bookInstance.goToPage && spreadIndexToShow >= 0) {
+      bookInstance.goToPage(spreadIndexToShow);
+    }
+  }
+
+  function onAddLeft() {
+    var pages = getPages();
+    var idx = getSelectedPageIndex();
+    insertPageAt(pages, idx, idx + 1);
+  }
+
+  function onAddRight() {
+    var pages = getPages();
+    var idx = getSelectedPageIndex();
+    insertPageAt(pages, idx + 1, idx + 1);
   }
 
   function onImageChange(e) {
@@ -237,6 +282,97 @@
     }
   }
 
+  /** Carga la configuración de música desde localStorage. */
+  function loadMusicConfig() {
+    try {
+      var raw = localStorage.getItem(MUSIC_STORAGE_KEY);
+      if (!raw) return { musicEnabled: false, volume: 0.5, musicFile: "" };
+      var data = JSON.parse(raw);
+      return {
+        musicEnabled: data.musicEnabled === true,
+        volume: typeof data.volume === "number" ? Math.max(0, Math.min(1, data.volume)) : 0.5,
+        musicFile: typeof data.musicFile === "string" ? data.musicFile : ""
+      };
+    } catch (e) {
+      return { musicEnabled: false, volume: 0.5, musicFile: "" };
+    }
+  }
+
+  /** Guarda la configuración de música en localStorage. */
+  function saveMusicConfig(cfg) {
+    try {
+      localStorage.setItem(MUSIC_STORAGE_KEY, JSON.stringify({
+        musicEnabled: cfg.musicEnabled,
+        volume: cfg.volume,
+        musicFile: cfg.musicFile
+      }));
+      return true;
+    } catch (e) {
+      console.warn("AlbumEditor: error al guardar música", e);
+      return false;
+    }
+  }
+
+  /** Aplica la configuración de música al elemento audio (sin reiniciar reproducción al cambiar volumen). */
+  function applyMusicToAudio() {
+    if (!audioEl) return;
+    var cfg = loadMusicConfig();
+    audioEl.volume = cfg.volume;
+    if (cfg.musicFile) audioEl.src = cfg.musicFile;
+    if (cfg.musicEnabled) {
+      if (audioEl.paused) audioEl.play().catch(function () {});
+    } else {
+      audioEl.pause();
+    }
+  }
+
+  /** Rellena los controles de música con el estado guardado. */
+  function fillMusicForm() {
+    var cfg = loadMusicConfig();
+    if (musicCheckbox) musicCheckbox.checked = cfg.musicEnabled;
+    if (volumeRange) {
+      volumeRange.value = String(cfg.volume);
+      updateVolumeLabel(cfg.volume);
+    }
+  }
+
+  function updateVolumeLabel(value) {
+    if (volumeLabel) volumeLabel.textContent = Math.round(Number(value) * 100);
+  }
+
+  function onMusicEnabledChange() {
+    var cfg = loadMusicConfig();
+    cfg.musicEnabled = musicCheckbox ? musicCheckbox.checked : false;
+    saveMusicConfig(cfg);
+    applyMusicToAudio();
+  }
+
+  function onMusicFileChange(e) {
+    var file = e.target && e.target.files && e.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function (ev) {
+      var dataUrl = ev.target && ev.target.result;
+      if (dataUrl) {
+        var cfg = loadMusicConfig();
+        cfg.musicFile = dataUrl;
+        saveMusicConfig(cfg);
+        applyMusicToAudio();
+      }
+      if (musicFileInput) musicFileInput.value = "";
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function onVolumeChange() {
+    var val = volumeRange ? Number(volumeRange.value) : 0.5;
+    updateVolumeLabel(val);
+    var cfg = loadMusicConfig();
+    cfg.volume = val;
+    saveMusicConfig(cfg);
+    if (audioEl) audioEl.volume = val;
+  }
+
   function onImport(e) {
     var file = e.target && e.target.files && e.target.files[0];
     if (!file) return;
@@ -273,7 +409,10 @@
     var overlay = document.getElementById("editorOverlay");
     if (panel) panel.classList.toggle("editor-panel--open", panelOpen);
     if (overlay) overlay.classList.toggle("editor-overlay--visible", panelOpen);
-    if (panelOpen) rebuildSelect();
+    if (panelOpen) {
+      rebuildSelect();
+      fillMusicForm();
+    }
   }
 
   function createPanel() {
@@ -312,7 +451,16 @@
         '<div class="editor-actions">' +
           '<button type="button" class="editor-btn editor-btn--primary" id="editorBtnSave">Guardar</button>' +
           '<button type="button" class="editor-btn editor-btn--danger" id="editorBtnDelete">Eliminar página</button>' +
-          '<button type="button" class="editor-btn editor-btn--secondary" id="editorBtnAdd">Agregar nueva página</button>' +
+          '<button type="button" class="editor-btn editor-btn--secondary" id="editorBtnAddLeft">Agregar página a la izquierda</button>' +
+          '<button type="button" class="editor-btn editor-btn--secondary" id="editorBtnAddRight">Agregar página a la derecha</button>' +
+        '</div>' +
+        '<div class="editor-music-section">' +
+          '<label class="editor-label">Música</label>' +
+          '<label class="editor-checkbox-label"><input type="checkbox" id="editorMusicEnabled" class="editor-checkbox"> Activar música</label>' +
+          '<label class="editor-label editor-label--inline">Archivo MP3</label>' +
+          '<input type="file" id="editorMusicFile" class="editor-file" accept="audio/mp3,audio/mpeg,.mp3">' +
+          '<label class="editor-label editor-label--inline">Volumen <span id="editorVolumePct">50</span>%</label>' +
+          '<input type="range" id="editorVolume" class="editor-range" min="0" max="1" step="0.01" value="0.5">' +
         '</div>' +
         '<div class="editor-import-export">' +
           '<button type="button" class="editor-btn editor-btn--outline" id="editorBtnExport">Exportar JSON</button>' +
@@ -332,15 +480,25 @@
     counterEl = document.getElementById("editorCounter");
     btnSave = document.getElementById("editorBtnSave");
     btnDelete = document.getElementById("editorBtnDelete");
-    btnAdd = document.getElementById("editorBtnAdd");
+    btnAddLeft = document.getElementById("editorBtnAddLeft");
+    btnAddRight = document.getElementById("editorBtnAddRight");
     btnExport = document.getElementById("editorBtnExport");
     importInput = document.getElementById("editorImportInput");
+    musicCheckbox = document.getElementById("editorMusicEnabled");
+    musicFileInput = document.getElementById("editorMusicFile");
+    volumeRange = document.getElementById("editorVolume");
+    volumeLabel = document.getElementById("editorVolumePct");
+    audioEl = document.getElementById("albumAudio");
 
     document.getElementById("editorCloseBtn").addEventListener("click", togglePanel);
     if (selectEl) selectEl.addEventListener("change", function () { fillForm(getSelectedPage()); });
     if (btnSave) btnSave.addEventListener("click", onSave);
     if (btnDelete) btnDelete.addEventListener("click", onDelete);
-    if (btnAdd) btnAdd.addEventListener("click", onAdd);
+    if (btnAddLeft) btnAddLeft.addEventListener("click", onAddLeft);
+    if (btnAddRight) btnAddRight.addEventListener("click", onAddRight);
+    if (musicCheckbox) musicCheckbox.addEventListener("change", onMusicEnabledChange);
+    if (musicFileInput) musicFileInput.addEventListener("change", onMusicFileChange);
+    if (volumeRange) volumeRange.addEventListener("input", onVolumeChange);
     if (fileInput) fileInput.addEventListener("change", onImageChange);
     if (btnExport) btnExport.addEventListener("click", onExport);
     if (importInput) importInput.addEventListener("change", onImport);
@@ -356,14 +514,23 @@
     bookInstance = book;
     createPanel();
     updateCounter();
+    updateDeleteButton();
+    fillMusicForm();
 
     var btnMode = document.getElementById("editorModeBtn");
     if (btnMode) btnMode.addEventListener("click", togglePanel);
   }
 
+  /** Aplica la configuración de música guardada al audio. Llamar al cargar la página. */
+  function initMusic() {
+    audioEl = document.getElementById("albumAudio");
+    applyMusicToAudio();
+  }
+
   window.AlbumEditor = {
     loadData: loadData,
     init: init,
+    initMusic: initMusic,
     MAX_PAGES: MAX_PAGES
   };
 })();
