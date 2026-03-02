@@ -143,6 +143,38 @@
     );
   };
 
+  /**
+   * Ajusta variables CSS para realismo dinámico:
+   * - grosor del lomo según total de páginas
+   * - acumulación visual izquierda/derecha según índice actual
+   * - sombras progresivas en el lado con más páginas
+   */
+  Book.prototype.updateDepthFx = function () {
+    if (!this.container) return;
+
+    var contentTotal = Math.max(1, this.total - 2); // excluye portada y contraportada
+    var contentIndex = Math.max(0, Math.min(contentTotal - 1, this.currentIndex - 1));
+    var ratio = contentTotal <= 1 ? 0.5 : contentIndex / (contentTotal - 1); // 0=principio, 1=final
+
+    var leftWeight = ratio;
+    var rightWeight = 1 - ratio;
+    var leftPages = Math.round(leftWeight * contentTotal);
+    var rightPages = Math.max(0, contentTotal - leftPages);
+
+    var spineVisualScale = 1 + Math.min(contentTotal, 100) * 0.0015 + Math.abs(leftWeight - rightWeight) * 0.03;
+    var leftStack = 4 + leftPages * 0.16;
+    var rightStack = 4 + rightPages * 0.16;
+
+    var leftDark = 0.08 + leftWeight * 0.18;
+    var rightDark = 0.08 + rightWeight * 0.18;
+
+    this.container.style.setProperty("--spine-visual-scale", spineVisualScale.toFixed(3));
+    this.container.style.setProperty("--stack-left-size", leftStack.toFixed(2) + "px");
+    this.container.style.setProperty("--stack-right-size", rightStack.toFixed(2) + "px");
+    this.container.style.setProperty("--page-shadow-left-color", "rgba(0, 0, 0, " + leftDark.toFixed(3) + ")");
+    this.container.style.setProperty("--page-shadow-right-color", "rgba(0, 0, 0, " + rightDark.toFixed(3) + ")");
+  };
+
   Book.prototype.updateUI = function () {
     var cur = this.currentIndex;
     var total = this.total;
@@ -165,10 +197,13 @@
     if (this.btnNext) this.btnNext.disabled = cur >= total - 1;
     if (this.btnHome) this.btnHome.disabled = cur === 0;
 
+    this.updateDepthFx();
+
     var nodes = this.container ? this.container.querySelectorAll(".spread") : [];
     for (var i = 0; i < nodes.length; i++) {
       var z = i === cur ? total + 1 : total - 1 - i;
       nodes[i].style.zIndex = z;
+      nodes[i].classList.toggle("is-current", i === cur);
     }
   };
 

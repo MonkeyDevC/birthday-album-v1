@@ -7,12 +7,12 @@
 
   var STORAGE_KEY = "album-editor-data";
   var MUSIC_STORAGE_KEY = "album-music-config";
+  var IDB_NAME = "AlbumEditorDB";
+  var IDB_STORE = "config";
+  var IDB_MUSIC_KEY = "musicData";
   var MAX_PAGES = 100;
-
-  /** Índices que no se pueden eliminar (primera y última página de contenido). */
-  function canDeletePageAtIndex(idx, total) {
-    return total > 1 && idx > 0 && idx < total - 1;
-  }
+  /** Tamaño máximo del archivo de música en bytes (10 MB). IndexedDB permite mucho más que localStorage. */
+  var MAX_MUSIC_SIZE_BYTES = 10 * 1024 * 1024;
 
   /**
    * Convierte las páginas del config por defecto al formato { id, title, image, content }.
@@ -100,7 +100,7 @@
   var bookInstance = null;
   var selectEl, titleInput, contentInput, imagePreview, fileInput;
   var counterEl, btnSave, btnDelete, btnAddLeft, btnAddRight, btnExport, btnImport, importInput;
-  var musicCheckbox, musicFileInput, volumeRange, volumeLabel, audioEl;
+  var musicCheckbox, musicFileInput, volumeRange, volumeLabel, musicFileNameEl, audioEl;
 
   function getPages() {
     return window.BOOK_CONFIG && window.BOOK_CONFIG.pages ? window.BOOK_CONFIG.pages.slice() : [];
@@ -126,17 +126,6 @@
       imagePreview.dataset.hasImage = page.image ? "1" : "0";
     }
     if (fileInput) fileInput.value = "";
-    updateDeleteButton();
-  }
-
-  /** Habilita o deshabilita "Eliminar página" según si la página actual es protegida. */
-  function updateDeleteButton() {
-    if (!btnDelete) return;
-    var pages = getPages();
-    var idx = getSelectedPageIndex();
-    var canDelete = canDeletePageAtIndex(idx, pages.length);
-    btnDelete.disabled = !canDelete;
-    btnDelete.classList.toggle("editor-btn--disabled", !canDelete);
   }
 
   function getSelectedPageIndex() {
@@ -187,8 +176,8 @@
   function onDelete() {
     var pages = getPages();
     if (pages.length <= 0) return;
+    if (!confirm("¿Está seguro de eliminar esta página?")) return;
     var idx = getSelectedPageIndex();
-    if (!canDeletePageAtIndex(idx, pages.length)) return;
     pages.splice(idx, 1);
     if (!saveToStorage(pages)) return;
     applyPagesToConfig(pages);
@@ -282,48 +271,142 @@
     }
   }
 
-  /** Carga la configuración de música desde localStorage. */
+  /**
+   * Carga solo la parte pequeña de la config de música desde localStorage (musicEnabled, volume).
+   * El archivo base64 se guarda en IndexedDB para no llenar localStorage.
+   */
   function loadMusicConfig() {
     try {
       var raw = localStorage.getItem(MUSIC_STORAGE_KEY);
-      if (!raw) return { musicEnabled: false, volume: 0.5, musicFile: "" };
+      if (!raw) return { musicEnabled: false, volume: 0.5, musicFileName: "" };
       var data = JSON.parse(raw);
       return {
         musicEnabled: data.musicEnabled === true,
         volume: typeof data.volume === "number" ? Math.max(0, Math.min(1, data.volume)) : 0.5,
-        musicFile: typeof data.musicFile === "string" ? data.musicFile : ""
+        musicFileName: typeof data.musicFileName === "string" ? data.musicFileName : ""
       };
     } catch (e) {
-      return { musicEnabled: false, volume: 0.5, musicFile: "" };
+      return { musicEnabled: false, volume: 0.5, musicFileName: "" };
     }
   }
 
-  /** Guarda la configuración de música en localStorage. */
-  function saveMusicConfig(cfg) {
+  /** Guarda musicEnabled, volume y musicFileName en localStorage. El base64 se guarda en IndexedDB. */
+  function saveMusicConfigSmall(cfg) {
     try {
-      localStorage.setItem(MUSIC_STORAGE_KEY, JSON.stringify({
-        musicEnabled: cfg.musicEnabled,
-        volume: cfg.volume,
-        musicFile: cfg.musicFile
-      }));
+      var payload = JSON.stringify({
+        musicEnabled: cfg.musicEnabled === true,
+        volume: typeof cfg.volume === "number" ? Math.max(0, Math.min(1, cfg.volume)) : 0.5,
+        musicFileName: typeof cfg.musicFileName === "string" ? cfg.musicFileName : ""
+      });
+      localStorage.setItem(MUSIC_STORAGE_KEY, payload);
       return true;
     } catch (e) {
-      console.warn("AlbumEditor: error al guardar música", e);
+      console.warn("AlbumEditor: error al guardar config música", e);
       return false;
     }
   }
 
-  /** Aplica la configuración de música al elemento audio (sin reiniciar reproducción al cambiar volumen). */
-  function applyMusicToAudio() {
+  /**
+   * Guarda el base64 del audio en IndexedDB (mucho más espacio que localStorage).
+   * callback(boolean success)
+   */
+  function saveMusicDataToIDB(dataUrl, callback) {
+    var request = indexedDB.open(IDB_NAME, 1);
+    request.onerror = function () { if (callback) callback(false); };
+    request.onsuccess = function () {
+      var db = request.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) { if (callback) callback(false); return; }
+      var tx = db.transaction(IDB_STORE, "readwrite");
+      var store = tx.objectStore(IDB_STORE);
+      store.put(dataUrl || "", IDB_MUSIC_KEY);
+      tx.oncomplete = function () { if (callback) callback(true); };
+      tx.onerror = function () { if (callback) callback(false); };
+    };
+    request.onupgradeneeded = function (e) {
+      var db = e.target.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+    };
+  }
+
+  /**
+   * Carga el base64 del audio desde IndexedDB. Si no hay, intenta migrar desde localStorage (datos antiguos).
+   * callback(string musicData o "")
+   */
+  function loadMusicDataFromStorage(callback) {
+    var request = indexedDB.open(IDB_NAME, 1);
+    request.onerror = function () { tryLegacyAndCallback(""); };
+    request.onsuccess = function () {
+      var db = request.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        tryLegacyAndCallback("");
+        return;
+      }
+      var tx = db.transaction(IDB_STORE, "readonly");
+      var getReq = tx.objectStore(IDB_STORE).get(IDB_MUSIC_KEY);
+      getReq.onsuccess = function () {
+        var data = getReq.result;
+        if (typeof data === "string" && data.length > 0) {
+          if (callback) callback(data);
+          return;
+        }
+        tryLegacyAndCallback("");
+      };
+      getReq.onerror = function () { tryLegacyAndCallback(""); };
+    };
+    request.onupgradeneeded = function (e) {
+      var db = e.target.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+    };
+
+    function tryLegacyAndCallback(ifNoLegacy) {
+      try {
+        var raw = localStorage.getItem(MUSIC_STORAGE_KEY);
+        if (!raw) { if (callback) callback(ifNoLegacy); return; }
+        var data = JSON.parse(raw);
+        var legacy = typeof data.musicData === "string" ? data.musicData : (typeof data.musicFile === "string" ? data.musicFile : "");
+        if (legacy) {
+          saveMusicDataToIDB(legacy, function () { if (callback) callback(legacy); });
+          saveMusicConfigSmall({ musicEnabled: data.musicEnabled, volume: data.volume });
+          return;
+        }
+      } catch (err) {}
+      if (callback) callback(ifNoLegacy);
+    }
+  }
+
+  /**
+   * Guarda config de música: musicEnabled/volume en localStorage; musicData (base64) en IndexedDB.
+   * cfg: { musicEnabled, volume, musicData (opcional) }
+   */
+  function saveMusicConfig(cfg) {
+    if (!saveMusicConfigSmall(cfg)) return false;
+    if (cfg && typeof cfg.musicData === "string") {
+      saveMusicDataToIDB(cfg.musicData, function (ok) {
+        if (!ok) console.warn("AlbumEditor: no se pudo guardar música en IndexedDB");
+      });
+    }
+    return true;
+  }
+
+  /**
+   * Aplica la configuración de música al elemento audio.
+   * Si se pasa musicData (base64), se usa; si no, se carga desde IndexedDB/legacy y luego se aplica.
+   */
+  function applyMusicToAudio(musicDataOptional) {
     if (!audioEl) return;
     var cfg = loadMusicConfig();
     audioEl.volume = cfg.volume;
-    if (cfg.musicFile) audioEl.src = cfg.musicFile;
-    if (cfg.musicEnabled) {
-      if (audioEl.paused) audioEl.play().catch(function () {});
-    } else {
-      audioEl.pause();
+
+    function setSrcAndPlay(dataUrl) {
+      if (dataUrl) audioEl.src = dataUrl; else audioEl.removeAttribute("src");
+      if (cfg.musicEnabled && dataUrl) audioEl.play().catch(function () {}); else audioEl.pause();
     }
+
+    if (musicDataOptional !== undefined) {
+      setSrcAndPlay(musicDataOptional);
+      return;
+    }
+    loadMusicDataFromStorage(setSrcAndPlay);
   }
 
   /** Rellena los controles de música con el estado guardado. */
@@ -334,6 +417,7 @@
       volumeRange.value = String(cfg.volume);
       updateVolumeLabel(cfg.volume);
     }
+    if (musicFileNameEl) musicFileNameEl.textContent = cfg.musicFileName || "Ningún archivo seleccionado";
   }
 
   function updateVolumeLabel(value) {
@@ -350,15 +434,43 @@
   function onMusicFileChange(e) {
     var file = e.target && e.target.files && e.target.files[0];
     if (!file) return;
+
+    var type = (file.type || "").toLowerCase();
+    var isAudio = type === "audio/mp3" || type === "audio/mpeg" || type === "audio/mp4" || file.name.toLowerCase().endsWith(".mp3");
+    if (!isAudio) {
+      alert("Por favor elige un archivo de audio válido (MP3).");
+      if (musicFileInput) musicFileInput.value = "";
+      return;
+    }
+
+    var maxMB = MAX_MUSIC_SIZE_BYTES / 1024 / 1024;
+    if (file.size > MAX_MUSIC_SIZE_BYTES) {
+      alert("El archivo supera el límite. Tamaño máximo: " + maxMB + " MB. Tu archivo: " + (Math.round(file.size / 1024) + " KB."));
+      if (musicFileInput) musicFileInput.value = "";
+      return;
+    }
+
     var reader = new FileReader();
     reader.onload = function (ev) {
       var dataUrl = ev.target && ev.target.result;
-      if (dataUrl) {
-        var cfg = loadMusicConfig();
-        cfg.musicFile = dataUrl;
-        saveMusicConfig(cfg);
-        applyMusicToAudio();
+      if (typeof dataUrl !== "string" || dataUrl.length === 0) {
+        alert("No se pudo leer el archivo.");
+        if (musicFileInput) musicFileInput.value = "";
+        return;
       }
+      var cfg = loadMusicConfig();
+      cfg.musicData = dataUrl;
+      cfg.musicFileName = file.name;
+      saveMusicConfig(cfg);
+      saveMusicDataToIDB(dataUrl, function (ok) {
+        if (!ok) alert("Error al guardar la música en el navegador. Prueba de nuevo.");
+        applyMusicToAudio(dataUrl);
+      });
+      if (musicFileNameEl) musicFileNameEl.textContent = file.name;
+      if (musicFileInput) musicFileInput.value = "";
+    };
+    reader.onerror = function () {
+      alert("Error al leer el archivo. Comprueba que sea un MP3 válido.");
       if (musicFileInput) musicFileInput.value = "";
     };
     reader.readAsDataURL(file);
@@ -412,6 +524,13 @@
     if (panelOpen) {
       rebuildSelect();
       fillMusicForm();
+      if (bookInstance && bookInstance.goToPage) {
+        var cur = bookInstance.currentIndex;
+        var total = bookInstance.total;
+        if (total > 2 && (cur === 0 || cur === total - 1)) {
+          bookInstance.goToPage(getSelectedPageIndex() + 1);
+        }
+      }
     }
   }
 
@@ -458,7 +577,11 @@
           '<label class="editor-label">Música</label>' +
           '<label class="editor-checkbox-label"><input type="checkbox" id="editorMusicEnabled" class="editor-checkbox"> Activar música</label>' +
           '<label class="editor-label editor-label--inline">Archivo MP3</label>' +
-          '<input type="file" id="editorMusicFile" class="editor-file" accept="audio/mp3,audio/mpeg,.mp3">' +
+          '<div class="editor-file-wrap">' +
+            '<input type="file" id="editorMusicFile" class="editor-file" accept="audio/mp3,audio/mpeg,.mp3" aria-label="Seleccionar archivo MP3">' +
+            '<span class="editor-file-btn">Seleccionar archivo</span>' +
+          '</div>' +
+          '<span class="editor-music-filename" id="editorMusicFileName" aria-live="polite">Ningún archivo seleccionado</span>' +
           '<label class="editor-label editor-label--inline">Volumen <span id="editorVolumePct">50</span>%</label>' +
           '<input type="range" id="editorVolume" class="editor-range" min="0" max="1" step="0.01" value="0.5">' +
         '</div>' +
@@ -486,12 +609,17 @@
     importInput = document.getElementById("editorImportInput");
     musicCheckbox = document.getElementById("editorMusicEnabled");
     musicFileInput = document.getElementById("editorMusicFile");
+    musicFileNameEl = document.getElementById("editorMusicFileName");
     volumeRange = document.getElementById("editorVolume");
     volumeLabel = document.getElementById("editorVolumePct");
     audioEl = document.getElementById("albumAudio");
 
     document.getElementById("editorCloseBtn").addEventListener("click", togglePanel);
-    if (selectEl) selectEl.addEventListener("change", function () { fillForm(getSelectedPage()); });
+    if (selectEl) selectEl.addEventListener("change", function () {
+      fillForm(getSelectedPage());
+      var idx = getSelectedPageIndex();
+      if (bookInstance && bookInstance.goToPage) bookInstance.goToPage(idx + 1);
+    });
     if (btnSave) btnSave.addEventListener("click", onSave);
     if (btnDelete) btnDelete.addEventListener("click", onDelete);
     if (btnAddLeft) btnAddLeft.addEventListener("click", onAddLeft);
@@ -514,7 +642,6 @@
     bookInstance = book;
     createPanel();
     updateCounter();
-    updateDeleteButton();
     fillMusicForm();
 
     var btnMode = document.getElementById("editorModeBtn");
