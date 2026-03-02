@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Álbum de cumpleaños interactivo — libro 3D dinámico." />
+    <title>El Libro de Recuerdos — Cumpleaños</title>
+    <link rel="stylesheet" href="assets/css/main.css" />
+  </head>
+  <body>
+    <div class="app">
+      <section class="book-stage" aria-label="Libro interactivo">
+        <div class="hud-frame" aria-hidden="true">
+          <div class="hud-progress" id="hudProgress" role="progressbar" aria-valuenow="1" aria-valuemin="1" aria-valuemax="1"></div>
+          <div class="hud-corner hud-corner--tl"></div>
+          <div class="hud-corner hud-corner--tr"></div>
+          <div class="hud-corner hud-corner--bl"></div>
+          <div class="hud-corner hud-corner--br"></div>
+        </div>
+        <div class="book-container" id="bookContainer"></div>
+      </section>
+
+      <nav class="controls" aria-label="Navegación del libro">
+        <button type="button" id="btnPrev" class="btn btn--prev">Anterior</button>
+        <button type="button" id="btnNext" class="btn btn--next">Siguiente</button>
+        <button type="button" id="btnHome" class="btn btn--home">Volver al inicio</button>
+      </nav>
+
+      <div class="editor-mode-wrap">
+        <button type="button" id="editorModeBtn" class="editor-mode-btn">Modo Edición</button>
+      </div>
+    </div>
+
+    <script src="assets/js/config.js"></script>
+    <script src="assets/js/book.js"></script>
+    <script src="assets/js/main.js"></script>
+    <script src="assets/js/editor.js"></script>
+  </body>
+</html>
