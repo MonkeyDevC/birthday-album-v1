@@ -72,6 +72,7 @@
       var p = pages[i];
       list.push({
         type: "content",
+        pageId: p.id != null ? String(p.id) : String(i + 1),
         image: p.image,
         heading: p.title != null ? p.title : p.heading,
         message: p.content != null ? p.content : p.message,
@@ -132,12 +133,14 @@
     }
 
     return (
-      '<section class="page-left">' +
-        '<img class="page-image" src="' + escapeAttr(spread.image) + '" alt="Recuerdo ' + spread.pageNum + '" loading="lazy">' +
+      '<section class="page-left" data-page-id="' + escapeAttr(spread.pageId) + '">' +
+        '<div class="editable-element editable-image-box" data-editable="true" data-page-id="' + escapeAttr(spread.pageId) + '" data-element-id="' + escapeAttr(spread.pageId) + '-img">' +
+          '<img class="page-image" src="' + escapeAttr(spread.image) + '" alt="Recuerdo ' + spread.pageNum + '" loading="lazy">' +
+        '</div>' +
       "</section>" +
-      '<section class="page-right">' +
-        "<h3>" + escapeHtml(spread.heading) + "</h3>" +
-        '<p class="page-message">' + escapeHtml(spread.message) + "</p>" +
+      '<section class="page-right" data-page-id="' + escapeAttr(spread.pageId) + '">' +
+        '<h3 class="editable-element" data-editable="true" data-page-id="' + escapeAttr(spread.pageId) + '" data-element-id="' + escapeAttr(spread.pageId) + '-title">' + escapeHtml(spread.heading) + "</h3>" +
+        '<p class="page-message editable-element" data-editable="true" data-page-id="' + escapeAttr(spread.pageId) + '" data-element-id="' + escapeAttr(spread.pageId) + '-message">' + escapeHtml(spread.message) + "</p>" +
         '<span class="page-num">' + spread.pageNum + " / " + spread.totalPages + "</span>" +
       "</section>"
     );

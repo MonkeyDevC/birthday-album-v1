@@ -16,9 +16,23 @@
       return;
     }
 
+    if (window.BookStore && typeof window.BookStore.bootstrap === "function") {
+      window.BookStore.bootstrap({
+        config: config,
+        musicStorageKey: "album-music-config"
+      });
+    }
+
     var book = new window.Book(config);
     book.init();
     window.bookInstance = book;
+
+    if (window.BookInteractions && typeof window.BookInteractions.destroy === "function") {
+      window.BookInteractions.destroy();
+    }
+    if (window.BookInteractions && typeof window.BookInteractions.init === "function") {
+      window.BookInteractions.init(book.container);
+    }
 
     if (window.AlbumEditor && typeof window.AlbumEditor.init === "function") {
       window.AlbumEditor.init(book);
